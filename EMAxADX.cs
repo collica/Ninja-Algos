@@ -1,0 +1,227 @@
+#region Using declarations
+using System;
+using System.Collections.Generic;
+using System.ComponentModel;
+using System.ComponentModel.DataAnnotations;
+using System.Linq;
+using System.Text;
+using System.Threading.Tasks;
+using System.Windows;
+using System.Windows.Input;
+using System.Windows.Media;
+using System.Xml.Serialization;
+using NinjaTrader.Cbi;
+using NinjaTrader.Gui;
+using NinjaTrader.Gui.Chart;
+using NinjaTrader.Gui.SuperDom;
+using NinjaTrader.Gui.Tools;
+using NinjaTrader.Data;
+using NinjaTrader.NinjaScript;
+using NinjaTrader.Core.FloatingPoint;
+using NinjaTrader.NinjaScript.Indicators;
+using NinjaTrader.NinjaScript.DrawingTools;
+#endregion
+
+//This namespace holds Strategies in this folder and is required. Do not change it. 
+namespace NinjaTrader.NinjaScript.Strategies
+{
+	public class EMAxADX : Strategy
+	{
+		private EMA EMA1;
+		private ADX ADX1;
+		
+		private double 	AvgPxLong;
+		private double 	AvgPxShort;
+		
+		private double MFELong;
+		private double MFEShort;
+		
+		private Order 	LongStop				= null; 
+		private Order 	ShortStop				= null; 
+
+		protected override void OnStateChange()
+		{
+			if (State == State.SetDefaults)
+			{
+				Description									= @"Enter the description for your new custom Strategy here.";
+				Name										= "EMAxADX";
+				Calculate									= Calculate.OnPriceChange;
+				EntriesPerDirection							= 1;
+				EntryHandling								= EntryHandling.AllEntries;
+				IsExitOnSessionCloseStrategy				= true;
+				ExitOnSessionCloseSeconds					= 30;
+				IsFillLimitOnTouch							= false;
+				MaximumBarsLookBack							= MaximumBarsLookBack.TwoHundredFiftySix;
+				OrderFillResolution							= OrderFillResolution.Standard;
+				Slippage									= 0;
+				StartBehavior								= StartBehavior.WaitUntilFlat;
+				TimeInForce									= TimeInForce.Day;
+				TraceOrders									= false;
+				RealtimeErrorHandling						= RealtimeErrorHandling.IgnoreAllErrors;
+				StopTargetHandling							= StopTargetHandling.PerEntryExecution;
+				BarsRequiredToTrade							= 20;
+				IsInstantiatedOnEachOptimizationIteration	= true;
+				
+				// General
+				ADXThreshold								= 30;
+				Per											= 14;
+				EMASlope									= 1.0;
+				Lookback									= 1;
+				
+			}
+			
+			else if (State == State.Configure)
+			{
+			}
+			
+			else if (State == State.DataLoaded)
+			{				
+				EMA1										= EMA(Close, Convert.ToInt32(Per));
+				EMA1.Plots[0].Brush 						= Brushes.Goldenrod;
+				AddChartIndicator(EMA1);
+				
+				ADX1										= ADX(Close, Convert.ToInt32(Per));
+				ADX1.Plots[0].Brush 						= Brushes.DarkCyan;
+				AddChartIndicator(ADX1);
+			}
+		}
+
+		protected override void OnBarUpdate()
+		{
+			if (BarsInProgress != 0) 
+				return;
+
+			if (CurrentBars[0] < 1)
+				return;
+			
+			// Active hours
+			if (ToTime(Time[0]) > 170000 || ToTime(Time[0]) < 145900)
+			{
+				 // Enter long
+				if ((Position.MarketPosition == MarketPosition.Flat)
+					&& (Close[0] > EMA1[0])
+					&& (Slope(EMA1, Lookback, 0) > EMASlope)
+					&& (IsRising(ADX1))
+					&& (ADX1[0] > ADXThreshold))
+					//&& (Slope(ADX1, Lookback, 0) > ADXSlope))
+				{
+					EnterLong(Convert.ToInt32(DefaultQuantity), @"Long");
+					Print(DateTime.Now.ToString("hh:mm:ss") + @" -- EMAxADX -- EMA Slope: " + Slope(EMA1, Lookback, 0));
+				}
+				
+				 // Enter short
+				if ((Position.MarketPosition == MarketPosition.Flat)
+					&& (Close[0] < EMA1[0])
+					&& (Slope(EMA1, Lookback, 0) < -EMASlope)
+					&& (IsRising(ADX1))
+					&& (ADX1[0] > ADXThreshold))
+					//&& (Slope(ADX1, Lookback, 0) > ADXSlope))
+				{
+					EnterShort(Convert.ToInt32(DefaultQuantity), @"Short");
+					Print(DateTime.Now.ToString("hh:mm:ss") + @" -- EMAxADX -- EMA Slope: " + Slope(EMA1, Lookback, 0));
+				}
+				
+				// Update long stop
+				if ((Position.MarketPosition == MarketPosition.Long)
+					&& (LongStop != null)
+					&& (LongStop.OrderState == OrderState.Accepted))
+				{
+					ChangeOrder(LongStop, LongStop.Quantity, 0, EMA1[0]);
+					BackBrushAll = Brushes.MediumAquamarine;
+				}
+				
+				// Update short stop
+				if ((Position.MarketPosition == MarketPosition.Short)
+					&& (ShortStop != null)
+					&& (ShortStop.OrderState == OrderState.Accepted))
+				{
+					ChangeOrder(ShortStop, ShortStop.Quantity, 0, EMA1[0]);
+					BackBrushAll = Brushes.Thistle;
+				}
+				
+			}
+			
+			// Close only
+			else if (ToTime(Time[0]) > 145900 && ToTime(Time[0]) < 170000)
+			{
+				
+				if (Position.MarketPosition == MarketPosition.Long)
+				{
+					ExitLong();
+				}
+				
+				if (Position.MarketPosition == MarketPosition.Short)
+				{
+					ExitShort();
+				}
+					
+			}
+			
+		}
+		
+		protected override void OnExecutionUpdate(Execution execution, string executionId, double price, int quantity, MarketPosition marketPosition, string orderId, DateTime time)
+		{
+			if (Position.MarketPosition == MarketPosition.Long)
+			{
+				ExitLongStopMarket(0, true, Convert.ToInt32(DefaultQuantity), EMA1[0], "LongStop", "Long");
+			}
+				
+			if (Position.MarketPosition == MarketPosition.Short)
+			{
+				ExitShortStopMarket(0, true, Convert.ToInt32(DefaultQuantity), EMA1[0], "ShortStop", "Short");
+			}
+			
+		}
+		
+		protected override void OnOrderUpdate(Order order, double limitPrice, double stopPrice, int quantity, int filled, double averageFillPrice, OrderState orderState, DateTime time, ErrorCode error, string nativeError)
+		{
+	  	
+			if (order.Name == "LongStop")
+		      	LongStop = order;
+			if (order.Name == "ShortStop")
+				ShortStop = order;
+
+			if (LongStop != null
+				&& LongStop.OrderState == OrderState.Rejected)
+			{
+				ExitLong();
+			}
+			
+			if (ShortStop != null
+				&& ShortStop.OrderState == OrderState.Rejected)
+			{
+			    ExitShort();
+			}
+			  
+		}
+		  
+
+		#region Properties
+		[NinjaScriptProperty]
+		[Range(1, int.MaxValue)]
+		[Display(Name="Per", Order=1, GroupName="Params")]
+		public int Per
+		{ get; set; }
+
+		[NinjaScriptProperty]
+		[Range(1, int.MaxValue)]
+		[Display(Name="ADXThreshold", Order=2, GroupName="Params")]
+		public int ADXThreshold
+		{ get; set; }
+		
+		[NinjaScriptProperty]
+		[Range(0, double.MaxValue)]
+		[Display(Name="EMASlope", Order=3, GroupName="Params")]
+		public double EMASlope
+		{ get; set; }
+		
+		[NinjaScriptProperty]
+		[Range(1, int.MaxValue)]
+		[Display(Name="Lookback", Order=4, GroupName="Params")]
+		public int Lookback
+		{ get; set; }
+		
+		#endregion
+
+	}
+}
